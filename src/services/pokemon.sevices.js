@@ -1,123 +1,174 @@
-const fetchallPokemon = async () => {
-    try {
-        const res = await fetch(`https://pokeapi.co/api/v2/pokemon?limit=150`)
-        if (!res.ok) {
-            console.error('Error fetching Pokemon:', res.statusText)
-            return null;
-        }
-        const data = await res.json()
-        
-        // Fetch details for each Pokemon to get images and info
-        const pokemonDetails = await Promise.all(
-            data.results.map(async (pokemon) => {
-                try {
-                    const detailRes = await fetch(pokemon.url)
-                    if (!detailRes.ok) throw new Error(`Failed to fetch ${pokemon.name}`)
-                    const detailData = await detailRes.json()
-                    return {
-                        name: detailData.name,
-                        image: detailData.sprites.other['official-artwork'].front_default || detailData.sprites.front_default,
-                        id: detailData.id,
-                        types: detailData.types.map(t => t.type.name),
-                        abilities: detailData.abilities.map(a => a.ability.name),
-                        height: detailData.height / 10,
-                        weight: detailData.weight / 10,
-                        stats: detailData.stats.map(s => ({
-                            name: s.stat.name,
-                            value: s.base_stat
-                        }))
-                    }
-                } catch (error) {
-                    console.error(`Error fetching details for ${pokemon.name}:`, error)
-                    return null
-                }
-            })
-        )
-        
-        return pokemonDetails.filter(pokemon => pokemon !== null);
-    }
-    catch (error) {
-        console.error('Error fetching Pokemon:', error)
-        return null;
-    }
-}
+const BASE_URL = "https://pokeapi.co/api/v2";
 
-const fetchPokemonLazy = async (offset = 0, limit = 20, type = null) => {
-    try {
-        let url = type 
-            ? `https://pokeapi.co/api/v2/type/${type}` 
-            : `https://pokeapi.co/api/v2/pokemon?offset=${offset}&limit=${limit}`
-        
-        const res = await fetch(url)
-        if (!res.ok) {
-            console.error('Error fetching Pokemon:', res.statusText)
-            return { pokemon: [], hasMore: false, total: 0 };
-        }
-        const data = await res.json()
-        
-        // If filtering by type, get pokemon from type endpoint
-        let results = type ? data.pokemon.slice(offset, offset + limit).map(p => ({ url: p.pokemon.url })) : data.results
-        const total = type ? data.pokemon.length : data.count
-        
-        // Fetch details for each Pokemon
-        const pokemonDetails = await Promise.all(
-            results.map(async (pokemon) => {
-                try {
-                    const detailRes = await fetch(pokemon.url)
-                    if (!detailRes.ok) throw new Error(`Failed to fetch ${pokemon.name}`)
-                    const detailData = await detailRes.json()
-                    return {
-                        name: detailData.name,
-                        image: detailData.sprites.other['official-artwork'].front_default || detailData.sprites.front_default,
-                        id: detailData.id,
-                        types: detailData.types.map(t => t.type.name),
-                        abilities: detailData.abilities.map(a => a.ability.name),
-                        height: detailData.height / 10,
-                        weight: detailData.weight / 10,
-                        stats: detailData.stats.map(s => ({
-                            name: s.stat.name,
-                            value: s.base_stat
-                        }))
-                    }
-                } catch (error) {
-                    console.error(`Error fetching details for ${pokemon.name}:`, error)
-                    return null
-                }
-            })
-        )
-        
-        const filteredPokemon = pokemonDetails.filter(pokemon => pokemon !== null)
-        const hasMore = type ? (offset + limit < total) : (data.next !== null)
-        
-        return {
-            pokemon: filteredPokemon,
-            hasMore,
-            total
-        };
-    }
-    catch (error) {
-        console.error('Error fetching Pokemon:', error)
-        return { pokemon: [], hasMore: false, total: 0 };
-    }
-}
+// Cache for pokemon details
+const pokemonDetailsCache = {};
 
-const fetchAllTypes = async () => {
+/**
+ * Fetch only name + image for listing
+ * 1 API call only
+ */
+const fetchAllPokemon = async () => {
     try {
-        const res = await fetch(`https://pokeapi.co/api/v2/type?limit=20`)
+        const res = await fetch(
+            `${BASE_URL}/pokemon?limit=150`
+        );
+
         if (!res.ok) {
-            console.error('Error fetching types:', res.statusText)
-            return [];
+            throw new Error("Failed to fetch Pokémon");
         }
-        const data = await res.json()
-        return data.results.map(type => type.name).sort()
-    }
-    catch (error) {
-        console.error('Error fetching types:', error)
+
+        const data = await res.json();
+
+        return data.results.map((pokemon) => {
+            const id = pokemon.url
+                .split("/")
+                .filter(Boolean)
+                .pop();
+
+            return {
+                id,
+                name: pokemon.name,
+                image: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${id}.png`,
+            };
+        });
+    } catch (error) {
+        console.error("Error fetching Pokémon:", error);
         return [];
     }
-}
+};
 
-export { fetchPokemonLazy, fetchAllTypes };
-export default fetchallPokemon;
+/**
+ * Fetch details of a pokemon on hover
+ * Uses cache so same pokemon is never fetched twice
+ */
+const fetchPokemonDetails = async (id) => {
+    try {
+        // Check cache first
+        if (pokemonDetailsCache[id]) {
+            return pokemonDetailsCache[id];
+        }
 
-        
+        const res = await fetch(
+            `${BASE_URL}/pokemon/${id}`
+        );
+
+        if (!res.ok) {
+            throw new Error("Failed to fetch Pokémon details");
+        }
+
+        const data = await res.json();
+
+        const pokemonDetails = {
+            id: data.id,
+            name: data.name,
+            image:
+                data.sprites.other?.["official-artwork"]
+                    ?.front_default ||
+                data.sprites.front_default,
+            types: data.types.map(
+                ({ type }) => type.name
+            ),
+            abilities: data.abilities.map(
+                ({ ability }) => ability.name
+            ),
+            height: data.height / 10,
+            weight: data.weight / 10,
+            stats: data.stats.map(
+                ({ stat, base_stat }) => ({
+                    name: stat.name,
+                    value: base_stat,
+                })
+            ),
+        };
+
+        // Save to cache
+        pokemonDetailsCache[id] = pokemonDetails;
+
+        return pokemonDetails;
+    } catch (error) {
+        console.error(
+            "Error fetching Pokémon details:",
+            error
+        );
+
+        return null;
+    }
+};
+
+/**
+ * Fetch pokemon by type with pagination
+ */
+const fetchPokemonByType = async (type, offset = 0, limit = 20) => {
+    try {
+        const res = await fetch(
+            `${BASE_URL}/type/${type}`
+        );
+
+        if (!res.ok) {
+            throw new Error("Failed to fetch Pokémon by type");
+        }
+
+        const data = await res.json();
+        const totalPokemon = data.pokemon.length;
+        const paginatedPokemon = data.pokemon.slice(offset, offset + limit);
+
+        return {
+            pokemon: paginatedPokemon.map(({ pokemon }) => {
+                const id = pokemon.url
+                    .split("/")
+                    .filter(Boolean)
+                    .pop();
+
+                return {
+                    id,
+                    name: pokemon.name,
+                    image: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${id}.png`,
+                };
+            }),
+            hasMore: offset + limit < totalPokemon,
+            total: totalPokemon,
+        };
+    } catch (error) {
+        console.error(
+            "Error fetching Pokémon by type:",
+            error
+        );
+        return { pokemon: [], hasMore: false, total: 0 };
+    }
+};
+
+/**
+ * Fetch all pokemon types
+ */
+const fetchAllTypes = async () => {
+    try {
+        const res = await fetch(
+            `${BASE_URL}/type?limit=20`
+        );
+
+        if (!res.ok) {
+            throw new Error("Failed to fetch types");
+        }
+
+        const data = await res.json();
+
+        return data.results
+            .map((type) => type.name)
+            .sort();
+    } catch (error) {
+        console.error(
+            "Error fetching types:",
+            error
+        );
+
+        return [];
+    }
+};
+
+export {
+    fetchPokemonDetails,
+    fetchAllTypes,
+    fetchPokemonByType,
+};
+
+export default fetchAllPokemon;
